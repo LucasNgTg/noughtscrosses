@@ -16,11 +16,11 @@ TITLE JOGO_VELHA
   CLR_LINES EQU 07h
   CLR_PLACEHOLDERS EQU 08h
 
-  ; MATRIX DB 9 DUP(0)
+  MATRIX DB 9 DUP(0)
 
   ; Vetor de teste
   ; Deve produzir X na diagonal principal
-  MATRIX DB "X", 0, "O", 0, "X", 0, 0, 0, "X"
+  ; MATRIX DB "X", 0, "O", 0, "X", 0, 0, 0, "X"
 
   MSG_NXT_MOVE DB "Digite a posicao do seu lance: $"
 
@@ -31,15 +31,45 @@ TITLE JOGO_VELHA
 MAIN PROC
   MOV AX, @DATA
   MOV DS, AX
-
-  MOV AX, ADDR
   MOV ES, AX
 
+  LEA BX, MATRIX
+
+  ; jogo inicia com X
+  MOV CL, "X"
   CALL DRAW_BOARD
 
+L1:
+  ; Pede ao usuário digitar o próximo lance
+  MOV AH, 9
+  LEA DX, MSG_NXT_MOVE
+  INT 21h
+
+  ; Lê o lance do jogador
   MOV AH, 1
   INT 21h
 
+  ; Transformação do char em idx
+  MOV SI, AX
+  AND SI, 000Fh
+  DEC SI
+
+  ; atualiza matriz
+  MOV [BX+SI], CL
+  CALL DRAW_BOARD
+
+  ; verifica se alguém venceu
+  CALL WIN
+
+  ; alterna o símbolo
+  ; X = 01011000
+  ; O = 01001111
+  XOR CL, 17h
+  CMP AL, 0
+  JE L1
+
+  ; espera o usuário apertar uma tecla
+  ; antes de retornar o controle para o programa
   MOV AH, 0
   INT 16h
   
@@ -47,14 +77,132 @@ MAIN PROC
   INT 21h
 MAIN ENDP
 
+; verifica quem venceu
+; recebe:
+;   SI = idx do último lance
+;   BX = addr do primeiro elemento da matriz
+; retorna:
+;   AL = 0 -> jogo continua
+;   AL = 1 -> empate
+;   AL = "X" -> X vence
+;   AL = "O" -> O vence
+WIN PROC
+  ; salva o valor atual dos regs
+  PUSH CX
+  PUSH DX
+  PUSH DI
+
+  ; AL = idx / 3
+  ; AH = idx % 3
+  MOV AX, SI
+  MOV DL, 3
+  DIV DL
+
+  ; primeiro idx da linha
+  ; DI = 3 * floor(idx / 3)
+  MOV DI, AX
+  ADD AL, AL
+  ADD DI, AX
+  AND DI, 00FFh
+
+  ; DH tem o valor do primeiro idx da linha
+  MOV DH, [BX+DI]
+
+  ; se todos os valores da linha forem iguais,
+  ; o jogador com o símbolo em DH vence
+  CMP DH, [BX+DI+1]
+  JNE NOT_ROW
+  CMP DH, [BX+DI+2]
+  JNE NOT_ROW
+  JMP WINNER
+
+NOT_ROW:
+  ; primeiro idx da coluna
+  ; DL = idx % 3
+  MOV DI, AX
+  SHL DI, 8
+
+  ; DH tem o valor do primeiro idx da coluna
+  MOV DH, [BX+DI]
+
+  ; se todos os valores da coluna forem iguais,
+  ; o jogador com o símbolo em [BX+SI] vence
+  CMP DH, [BX+DI+3]
+  JNE NOT_COL
+  CMP DH, [BX+DI+6]
+  JNE NOT_COL
+  JMP WINNER
+
+NOT_COL:
+  ; DH tem o valor no meio do tabuleiro
+  XOR AX, AX
+  MOV DH, [BX+4]
+  CMP DH, 0
+  JE END_WIN
+
+  ; se o idx não for par,
+  ; o lance não foi em nenhuma das diagonais
+  TEST SI, 1h
+  JNZ CHECK_DRAW
+  ; compara o valor do meio com os
+  ; outros valores da diagonal secundária
+  ; se forem iguais,
+  ; o jogador com o símbolo em [BX+SI] vence
+  ; caso contrário, checar diagonal principal
+  CMP DH, [BX+2]
+  JNE NOT_DIAG2
+  CMP DH, [BX+6]
+  JNE NOT_DIAG2
+  JMP WINNER
+
+NOT_DIAG2:
+  ; se idx não for divisível por 4,
+  ; o lance não foi na diagonal principal
+  TEST SI, 3h
+  JNZ CHECK_DRAW
+  ; compara o valor do meio com os
+  ; outros valores da diagonal principal
+  ; se forem iguais,
+  ; o jogador com o símbolo em [BX+SI] vence
+  ; caso contrário, ver se o jogo empatou
+  CMP DH, [BX]
+  JNE CHECK_DRAW
+  CMP DH, [BX+8]
+  JNE CHECK_DRAW
+  JMP WINNER
+
+WINNER:
+  MOV AL, [BX+SI]
+  JMP END_WIN
+
+CHECK_DRAW:
+  ; verifica se há zeros na matriz
+  ; se houver, o jogo continua
+  MOV DI, BX
+  MOV CX, 9
+  REPNE SCASB
+  JZ END_WIN
+  INC AL
+
+END_WIN:
+  POP DI
+  POP DX
+  POP CX
+  RET
+WIN ENDP
+
 ; Desenha o tabuleiro na tela com o estado atual
 DRAW_BOARD PROC
   ; Salva o valor atual dos regs
+  PUSH ES
   PUSH AX
   PUSH DX
   PUSH CX
   PUSH SI
   PUSH DI
+
+  MOV AX, ADDR
+  MOV ES, AX
 
   CLD
 
@@ -159,17 +307,13 @@ SKIP_PRINT_HSEP:
   MOV DX, 0A00h
   INT 10h
 
-  ; Pede ao usuário digitar o próximo lance
-  MOV AH, 9
-  LEA DX, MSG_NXT_MOVE
-  INT 21h
-
   ; Devolve os valores iniciais dos regs
   POP DI
   POP SI
   POP CX
   POP DX
   POP AX
+  POP ES
   RET
 DRAW_BOARD ENDP
 END MAIN
