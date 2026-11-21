@@ -1,319 +1,687 @@
 TITLE JOGO_VELHA
 .MODEL SMALL
-.STACK 100h
+.STACK 100H
+
 .DATA
-  ADDR EQU 0B800h
-  START_TAB EQU 35 ; 39 - (9 / 2)
-  ADDR_TAB EQU 710 ; 2 * (80 * 4 + 35)
+  VIDEO_SEG EQU 0B800H
+  ADDR_TAB EQU 710
 
-  LF EQU 0Ah
-  CR EQU 0Dh
-  TAB EQU 09h
-  NXT_LINE DB LF, CR, "$"
-
-  CLR_X EQU 0Ch
-  CLR_O EQU 09h
-  CLR_LINES EQU 07h
-  CLR_PLACEHOLDERS EQU 08h
+  CLR_X EQU 0CH
+  CLR_O EQU 09H
+  CLR_LINES EQU 07H
+  CLR_PLACEHOLDERS EQU 08H
 
   MATRIX DB 9 DUP(0)
 
-  ; Vetor de teste
-  ; Deve produzir X na diagonal principal
-  ; MATRIX DB "X", 0, "O", 0, "X", 0, 0, 0, "X"
+  GAME_MODE DB 1
+  TURN_NOW DB 'X'
+  MOVE_COUNT DB 0
+  WINNER DB 0
 
-  MSG_NXT_MOVE DB "Digite a posicao do seu lance: $"
+  ; Combinacoes vencedoras
+  WIN_COMBOS DB 0,1,2, 3,4,5, 6,7,8
+             DB 0,3,6, 1,4,7, 2,5,8
+             DB 0,4,8, 2,4,6
 
-  HSEP  DB "--+---+--"
+  HSEP DB '--+---+--'
   LEN_HSEP EQU 9
+
+  MSG_MENU DB '=== JOGO DA VELHA ===',13,10
+           DB '1 - Jogador X Jogador',13,10
+           DB '2 - Jogador X Computador',13,10
+           DB 'Escolha 1 ou 2 (sem ENTER): $'
+
+  MSG_MODE_ERROR DB 13,10
+                 DB 'Modo invalido.',13,10,'$'
+
+  MSG_TURN_X DB 13,10
+             DB 'Jogador X - escolha (1-9): $'
+
+  MSG_TURN_O DB 13,10
+             DB 'Jogador O - escolha (1-9): $'
+
+  MSG_INVALID DB 13,10
+              DB 'Posicao invalida!',13,10,'$'
+
+  MSG_BUSY DB 13,10
+           DB 'Essa casa ja esta ocupada!',13,10,'$'
+
+  MSG_X_WINS DB 13,10
+             DB 'Vitoria do jogador X!',13,10,'$'
+
+  MSG_O_WINS DB 13,10
+             DB 'Vitoria do jogador O!',13,10,'$'
+
+  MSG_CPU_WINS DB 13,10
+               DB 'Vitoria do computador!',13,10,'$'
+
+  MSG_DRAW DB 13,10
+           DB 'Empate!',13,10,'$'
+
+  MSG_REPLAY DB 13,10
+             DB 'Jogar novamente? (S/N): $'
+
 .CODE
-;description
+
+; ==========================================
+; PROGRAMA PRINCIPAL
+; ==========================================
+
 MAIN PROC
+
   MOV AX, @DATA
   MOV DS, AX
-  MOV ES, AX
 
-  LEA BX, MATRIX
+MENU:
+  MOV AX, 0003H
+  INT 10H
 
-  ; jogo inicia com X
-  MOV CL, "X"
+  LEA DX, MSG_MENU
+  MOV AH, 09H
+  INT 21H
+
+  MOV AH, 00H
+  INT 16H
+
+  CMP AL, '1'
+  JE SET_PVP
+
+  CMP AL, '2'
+  JE SET_PVC
+
+  LEA DX, MSG_MODE_ERROR
+  MOV AH, 09H
+  INT 21H
+
+  JMP MENU
+
+SET_PVP:
+  MOV GAME_MODE, 1
+  JMP START_MATCH
+
+SET_PVC:
+  MOV GAME_MODE, 2
+
+START_MATCH:
+  CALL RESET_BOARD
+
+GAME_LOOP:
   CALL DRAW_BOARD
 
-L1:
-  ; Pede ao usuário digitar o próximo lance
-  MOV AH, 9
-  LEA DX, MSG_NXT_MOVE
-  INT 21h
+  CMP GAME_MODE, 2
+  JNE HUMAN_TURN
 
-  ; Lê o lance do jogador
-  MOV AH, 1
-  INT 21h
+  CMP TURN_NOW, 'O'
+  JNE HUMAN_TURN
 
-  ; Transformação do char em idx
-  MOV SI, AX
-  AND SI, 000Fh
-  DEC SI
+  CALL CPU_MOVE
+  JMP CHECK_MOVE
 
-  ; atualiza matriz
-  MOV [BX+SI], CL
+HUMAN_TURN:
+  CALL HUMAN_MOVE
+
+CHECK_MOVE:
+  CALL CHECK_WIN
+
+  CMP WINNER, 0
+  JNE GAME_OVER
+
+  CMP MOVE_COUNT, 9
+  JE GAME_OVER
+
+  CMP TURN_NOW, 'X'
+  JE CHANGE_TO_O
+
+  MOV TURN_NOW, 'X'
+  JMP GAME_LOOP
+
+CHANGE_TO_O:
+  MOV TURN_NOW, 'O'
+  JMP GAME_LOOP
+
+GAME_OVER:
   CALL DRAW_BOARD
 
-  ; verifica se alguém venceu
-  CALL WIN
+  CMP WINNER, 'X'
+  JE SHOW_X_WIN
 
-  ; alterna o símbolo
-  ; X = 01011000
-  ; O = 01001111
-  XOR CL, 17h
-  CMP AL, 0
-  JE L1
+  CMP WINNER, 'O'
+  JE SHOW_O_WIN
 
-  ; espera o usuário apertar uma tecla
-  ; antes de retornar o controle para o programa
-  MOV AH, 0
-  INT 16h
-  
-  MOV AH, 4Ch
-  INT 21h
+  LEA DX, MSG_DRAW
+  JMP PRINT_RESULT
+
+SHOW_X_WIN:
+  LEA DX, MSG_X_WINS
+  JMP PRINT_RESULT
+
+SHOW_O_WIN:
+  CMP GAME_MODE, 2
+  JE SHOW_CPU_WIN
+
+  LEA DX, MSG_O_WINS
+  JMP PRINT_RESULT
+
+SHOW_CPU_WIN:
+  LEA DX, MSG_CPU_WINS
+
+PRINT_RESULT:
+  MOV AH, 09H
+  INT 21H
+
+  LEA DX, MSG_REPLAY
+  MOV AH, 09H
+  INT 21H
+
+  MOV AH, 00H
+  INT 16H
+
+  ; CORRECAO DOS SALTOS DO TASM
+
+  CMP AL, 'S'
+  JE REINICIAR_JOGO
+
+  CMP AL, 's'
+  JE REINICIAR_JOGO
+
+  JMP ENCERRAR_JOGO
+
+REINICIAR_JOGO:
+  JMP MENU
+
+ENCERRAR_JOGO:
+  MOV AX, 4C00H
+  INT 21H
+
 MAIN ENDP
 
-; verifica quem venceu
-; recebe:
-;   SI = idx do último lance
-;   BX = addr do primeiro elemento da matriz
-; retorna:
-;   AL = 0 -> jogo continua
-;   AL = 1 -> empate
-;   AL = "X" -> X vence
-;   AL = "O" -> O vence
-WIN PROC
-  ; salva o valor atual dos regs
+
+; ==========================================
+; REINICIALIZA O TABULEIRO
+; ==========================================
+
+RESET_BOARD PROC NEAR
+
+  PUSH AX
   PUSH CX
+  PUSH SI
+
+  LEA SI, MATRIX
+  MOV CX, 9
+
+RESET_LOOP:
+  MOV BYTE PTR [SI], 0
+  INC SI
+
+  LOOP RESET_LOOP
+
+  MOV TURN_NOW, 'X'
+  MOV MOVE_COUNT, 0
+  MOV WINNER, 0
+
+  POP SI
+  POP CX
+  POP AX
+
+  RET
+
+RESET_BOARD ENDP
+
+
+; ==========================================
+; JOGADA DO JOGADOR HUMANO
+; ==========================================
+
+HUMAN_MOVE PROC NEAR
+
+  PUSH AX
   PUSH DX
+  PUSH SI
+
+ASK_MOVE:
+  CMP TURN_NOW, 'X'
+  JE ASK_X
+
+  LEA DX, MSG_TURN_O
+  JMP PRINT_PROMPT
+
+ASK_X:
+  LEA DX, MSG_TURN_X
+
+PRINT_PROMPT:
+  MOV AH, 09H
+  INT 21H
+
+  MOV AH, 00H
+  INT 16H
+
+  ; Testa entrada de 1 a 9
+
+  CMP AL, '1'
+  JB INVALID_MOVE
+
+  CMP AL, '9'
+  JA INVALID_MOVE
+
+  ; Converte ASCII em indice de 0 a 8
+
+  SUB AL, '1'
+  XOR AH, AH
+  MOV SI, AX
+
+  ; Verifica se a casa esta livre
+
+  CMP BYTE PTR MATRIX[SI], 0
+  JNE OCCUPIED
+
+  ; Grava X ou O
+
+  MOV AL, TURN_NOW
+  MOV MATRIX[SI], AL
+
+  INC MOVE_COUNT
+
+  JMP MOVE_OK
+
+INVALID_MOVE:
+  LEA DX, MSG_INVALID
+  MOV AH, 09H
+  INT 21H
+
+  JMP ASK_MOVE
+
+OCCUPIED:
+  LEA DX, MSG_BUSY
+  MOV AH, 09H
+  INT 21H
+
+  JMP ASK_MOVE
+
+MOVE_OK:
+  POP SI
+  POP DX
+  POP AX
+
+  RET
+
+HUMAN_MOVE ENDP
+
+
+; ==========================================
+; VERIFICA SE EXISTE VENCEDOR
+; ==========================================
+
+CHECK_WIN PROC NEAR
+
+  PUSH AX
+  PUSH BX
+  PUSH CX
+  PUSH SI
   PUSH DI
 
-  ; AL = idx / 3
-  ; AH = idx % 3
-  MOV AX, SI
-  MOV DL, 3
-  DIV DL
+  LEA SI, WIN_COMBOS
+  MOV CX, 8
 
-  ; primeiro idx da linha
-  ; DI = 3 * floor(idx / 3)
-  MOV DI, AX
-  ADD AL, AL
-  ADD DI, AX
-  AND DI, 00FFh
+CHECK_LINE:
+  ; Primeira casa
 
-  ; DH tem o valor do primeiro idx da linha
-  MOV DH, [BX+DI]
+  MOV BL, [SI]
+  XOR BH, BH
 
-  ; se todos os valores da linha forem iguais,
-  ; o jogador com o símbolo em DH vence
-  CMP DH, [BX+DI+1]
-  JNE NOT_ROW
-  CMP DH, [BX+DI+2]
-  JNE NOT_ROW
-  JMP WINNER
-
-NOT_ROW:
-  ; primeiro idx da coluna
-  ; DL = idx % 3
-  MOV DI, AX
-  SHL DI, 8
-
-  ; DH tem o valor do primeiro idx da coluna
-  MOV DH, [BX+DI]
-
-  ; se todos os valores da coluna forem iguais,
-  ; o jogador com o símbolo em [BX+SI] vence
-  CMP DH, [BX+DI+3]
-  JNE NOT_COL
-  CMP DH, [BX+DI+6]
-  JNE NOT_COL
-  JMP WINNER
-
-NOT_COL:
-  ; DH tem o valor no meio do tabuleiro
-  XOR AX, AX
-  MOV DH, [BX+4]
-  CMP DH, 0
-  JE END_WIN
-
-  ; se o idx não for par,
-  ; o lance não foi em nenhuma das diagonais
-  TEST SI, 1h
-  JNZ CHECK_DRAW
-  ; compara o valor do meio com os
-  ; outros valores da diagonal secundária
-  ; se forem iguais,
-  ; o jogador com o símbolo em [BX+SI] vence
-  ; caso contrário, checar diagonal principal
-  CMP DH, [BX+2]
-  JNE NOT_DIAG2
-  CMP DH, [BX+6]
-  JNE NOT_DIAG2
-  JMP WINNER
-
-NOT_DIAG2:
-  ; se idx não for divisível por 4,
-  ; o lance não foi na diagonal principal
-  TEST SI, 3h
-  JNZ CHECK_DRAW
-  ; compara o valor do meio com os
-  ; outros valores da diagonal principal
-  ; se forem iguais,
-  ; o jogador com o símbolo em [BX+SI] vence
-  ; caso contrário, ver se o jogo empatou
-  CMP DH, [BX]
-  JNE CHECK_DRAW
-  CMP DH, [BX+8]
-  JNE CHECK_DRAW
-  JMP WINNER
-
-WINNER:
-  MOV AL, [BX+SI]
-  JMP END_WIN
-
-CHECK_DRAW:
-  ; verifica se há zeros na matriz
-  ; se houver, o jogo continua
   MOV DI, BX
-  MOV CX, 9
-  REPNE SCASB
-  JZ END_WIN
-  INC AL
+  MOV AL, MATRIX[DI]
 
-END_WIN:
+  CMP AL, 0
+  JE NEXT_LINE
+
+  ; Segunda casa
+
+  MOV BL, [SI+1]
+  XOR BH, BH
+
+  MOV DI, BX
+
+  CMP AL, MATRIX[DI]
+  JNE NEXT_LINE
+
+  ; Terceira casa
+
+  MOV BL, [SI+2]
+  XOR BH, BH
+
+  MOV DI, BX
+
+  CMP AL, MATRIX[DI]
+  JNE NEXT_LINE
+
+  ; Encontrou tres marcas iguais
+
+  MOV WINNER, AL
+  JMP END_CHECK
+
+NEXT_LINE:
+  ADD SI, 3
+  LOOP CHECK_LINE
+
+END_CHECK:
   POP DI
+  POP SI
+  POP CX
+  POP BX
+  POP AX
+
+  RET
+
+CHECK_WIN ENDP
+
+
+; ==========================================
+; BUSCA JOGADA TATICA DA CPU
+; ==========================================
+
+FIND_TACTIC PROC NEAR
+
+  PUSH BX
+  PUSH CX
+  PUSH DX
+  PUSH SI
+  PUSH DI
+
+  ; AL = marca que queremos analisar
+
+  MOV DL, AL
+
+  LEA SI, WIN_COMBOS
+  MOV CX, 8
+
+TACTIC_LINE:
+  XOR DH, DH
+
+  ; Indice da casa vazia
+  MOV AH, 0FFH
+
+  PUSH CX
+  MOV CX, 3
+
+TACTIC_CELL:
+  MOV BL, [SI]
+  XOR BH, BH
+
+  MOV DI, BX
+  MOV BL, MATRIX[DI]
+
+  CMP BL, DL
+  JE TACTIC_MATCH
+
+  CMP BL, 0
+  JE TACTIC_EMPTY
+
+  ; Existe marca adversaria
+  OR DH, 80H
+
+  JMP TACTIC_ADVANCE
+
+TACTIC_MATCH:
+  INC DH
+  JMP TACTIC_ADVANCE
+
+TACTIC_EMPTY:
+  MOV AH, [SI]
+
+TACTIC_ADVANCE:
+  INC SI
+
+  LOOP TACTIC_CELL
+
+  POP CX
+
+  CMP DH, 2
+  JNE TACTIC_NEXT
+
+  CMP AH, 0FFH
+  JE TACTIC_NEXT
+
+  ; Retorna indice livre em AL
+  MOV AL, AH
+
+  JMP TACTIC_DONE
+
+TACTIC_NEXT:
+  LOOP TACTIC_LINE
+
+  MOV AL, 0FFH
+
+TACTIC_DONE:
+  POP DI
+  POP SI
   POP DX
   POP CX
-  RET
-WIN ENDP
+  POP BX
 
-; Desenha o tabuleiro na tela com o estado atual
-DRAW_BOARD PROC
-  ; Salva o valor atual dos regs
-  PUSH ES
+  RET
+
+FIND_TACTIC ENDP
+
+
+; ==========================================
+; JOGADA AUTOMATICA DO COMPUTADOR
+; ==========================================
+
+CPU_MOVE PROC NEAR
+
+  PUSH AX
+  PUSH SI
+
+  ; Tenta completar uma linha de O
+
+  MOV AL, 'O'
+  CALL FIND_TACTIC
+
+  CMP AL, 0FFH
+  JNE CPU_PLACE
+
+  ; Tenta impedir a vitoria de X
+
+  MOV AL, 'X'
+  CALL FIND_TACTIC
+
+  CMP AL, 0FFH
+  JNE CPU_PLACE
+
+  ; Se possivel, ocupa o centro
+
+  CMP BYTE PTR MATRIX[4], 0
+  JNE CPU_FIND_FREE
+
+  MOV AL, 4
+  JMP CPU_PLACE
+
+CPU_FIND_FREE:
+  XOR SI, SI
+
+CPU_SEARCH:
+  CMP SI, 9
+  JAE CPU_DONE
+
+  CMP BYTE PTR MATRIX[SI], 0
+  JE CPU_FOUND
+
+  INC SI
+  JMP CPU_SEARCH
+
+CPU_FOUND:
+  MOV AX, SI
+
+CPU_PLACE:
+  XOR AH, AH
+  MOV SI, AX
+
+  MOV BYTE PTR MATRIX[SI], 'O'
+
+  INC MOVE_COUNT
+
+CPU_DONE:
+  POP SI
+  POP AX
+
+  RET
+
+CPU_MOVE ENDP
+
+
+; ==========================================
+; DESENHO DO TABULEIRO
+; ==========================================
+
+DRAW_BOARD PROC NEAR
+
   PUSH AX
   PUSH DX
   PUSH CX
   PUSH SI
   PUSH DI
-
-  MOV AX, ADDR
-  MOV ES, AX
+  PUSH ES
 
   CLD
 
+  ; Limpa tela e seleciona modo texto
+
+  MOV AX, 0003H
+  INT 10H
+
+  ; Segmento da memoria de video
+
+  MOV AX, VIDEO_SEG
+  MOV ES, AX
+
   LEA SI, MATRIX
 
-  ; Modo vídeo-texto
-  MOV AX, 3
-  INT 10h
-  ; Início do tabuleiro
   MOV DI, ADDR_TAB
 
-  ; Contador ASCII
-  MOV AL, "1"
-  ; Contador de linhas
+  ; Contador ASCII das casas
+  MOV AL, '1'
+
+  ; Tres linhas
   MOV CX, 3
+
 LIN:
-  ; Salva o contador de linhas
   PUSH CX
-  ; Reinicia o contador de colunas
+
+  ; Tres colunas
   MOV CX, 3
-  ; Guarda a posição atual do tabuleiro
+
   PUSH DI
+
 COL:
   MOV AH, CLR_PLACEHOLDERS
-  ; Salva a posição atual do contador ASCII
   PUSH AX
-  ; Verifica o que está na posição atual da matriz
+
   MOV AL, DS:[SI]
-  CMP AL, 0 ; Se for 0, a posição está livre
+
+  CMP AL, 0
   JE PRINT_POS
 
-  CMP AL, "X"
+  CMP AL, 'X'
   JE PRINT_X
 
-  ; Impressão do O
+  ; Impressao do O
+
   MOV AH, CLR_O
   MOV ES:[DI], AX
+
   POP AX
+
   JMP CONTINUE_PRINT_TAB
+
 PRINT_X:
-  ; Impressão do X
   MOV AH, CLR_X
   MOV ES:[DI], AX
+
   POP AX
+
   JMP CONTINUE_PRINT_TAB
+
 PRINT_POS:
-  ; Retorna o contador ASCII
   POP AX
   MOV ES:[DI], AX
+
 CONTINUE_PRINT_TAB:
-  ; Se a última posição da linha foi impressa,
-  ; pular o separador vertical
   CMP CX, 1
   JE SKIP_PRINT_VSEP
+
 PRINT_VSEP:
-  ADD DI, 4 ; Espaçamento
+  ADD DI, 4
 
   PUSH AX
-  MOV AL, "|"
+
+  MOV AL, '|'
   MOV AH, CLR_LINES
+
   MOV ES:[DI], AX
+
   POP AX
 
-  ADD DI, 4 ; Espaçamento
+  ADD DI, 4
+
 SKIP_PRINT_VSEP:
   INC AL
   INC SI
+
   LOOP COL
 
-  ; Passa para a próxima linha
+  ; Proxima linha
+
   POP DI
   ADD DI, 160
-  ; Se ultrapassou 9 (fim do tabuleiro),
-  ; pula o separador horizontal
-  CMP AL, "9"
+
+  CMP AL, '9'
   JA SKIP_PRINT_HSEP
 
-  PUSH DI ; Salva a posição do tabuleiro
-  PUSH AX ; Salva o contador ASCII
-  PUSH SI ; Salva a posição na matriz
+  PUSH DI
+  PUSH AX
+  PUSH SI
 
   MOV AH, CLR_LINES
-  LEA SI, HSEP ; Carrega o separador horizontal
+
+  LEA SI, HSEP
   MOV CX, LEN_HSEP
+
 PRINT_HSEP:
   LODSB
+
   MOV ES:[DI], AX
+
   ADD DI, 2
   LOOP PRINT_HSEP
 
   POP SI
   POP AX
   POP DI
-  ADD DI, 160 ; Passa para a próxima linha
+
+  ADD DI, 160
+
 SKIP_PRINT_HSEP:
   POP CX
+
   LOOP LIN
 
-  ; Move o cursor para uma linha vazia
-  ; com espaçamento de uma linha
-  MOV AH, 2
-  MOV DX, 0A00h
-  INT 10h
+  ; Posiciona cursor abaixo do tabuleiro
 
-  ; Devolve os valores iniciais dos regs
+  MOV AH, 02H
+  MOV BH, 00H
+  MOV DX, 0A00H
+
+  INT 10H
+
+  POP ES
   POP DI
   POP SI
   POP CX
   POP DX
   POP AX
-  POP ES
+
   RET
+
 DRAW_BOARD ENDP
+
 END MAIN
